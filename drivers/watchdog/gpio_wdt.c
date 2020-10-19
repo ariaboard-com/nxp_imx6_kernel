@@ -27,7 +27,10 @@ enum {
 
 struct gpio_wdt_priv {
 	int			gpio;
+	int			enable_gpio;
 	bool			active_low;
+	bool			use_enable_gpio;
+	bool			enable_active_low;
 	bool			state;
 	bool			always_running;
 	bool			armed;
@@ -41,6 +44,11 @@ struct gpio_wdt_priv {
 static void gpio_wdt_disable(struct gpio_wdt_priv *priv)
 {
 	gpio_set_value_cansleep(priv->gpio, !priv->active_low);
+
+	if (priv->use_enable_gpio) {
+		gpio_set_value_cansleep(priv->enable_gpio,
+			priv->enable_active_low);
+	}
 
 	/* Put GPIO back to tristate */
 	if (priv->hw_algo == HW_ALGO_TOGGLE)
@@ -91,6 +99,11 @@ static int gpio_wdt_start(struct watchdog_device *wdd)
 
 	gpio_wdt_start_impl(priv);
 	priv->armed = true;
+
+	if (priv->use_enable_gpio) {
+		gpio_direction_output(priv->enable_gpio,
+			!priv->enable_active_low);
+	}
 
 	return 0;
 }
@@ -159,6 +172,16 @@ static int gpio_wdt_probe(struct platform_device *pdev)
 
 	priv->active_low = flags & OF_GPIO_ACTIVE_LOW;
 
+	priv->enable_gpio = of_get_named_gpio_flags(pdev->dev.of_node,
+		"enable-gpio", 0, &flags);
+	if (gpio_is_valid(priv->enable_gpio)) {
+		priv->use_enable_gpio = 1;
+		priv->enable_active_low = flags & OF_GPIO_ACTIVE_LOW;
+	}
+	else {
+		printk("Failed to set wdt-gpio enable GPIO!\n");
+	}
+
 	ret = of_property_read_string(pdev->dev.of_node, "hw_algo", &algo);
 	if (ret)
 		return ret;
@@ -176,6 +199,15 @@ static int gpio_wdt_probe(struct platform_device *pdev)
 				    dev_name(&pdev->dev));
 	if (ret)
 		return ret;
+
+	if(priv->use_enable_gpio) {
+		f = priv->enable_active_low ? GPIOF_OUT_INIT_HIGH :
+			GPIOF_OUT_INIT_LOW;
+		ret = devm_gpio_request_one(&pdev->dev, priv->enable_gpio, f,
+			dev_name(&pdev->dev));
+		if(ret)
+			priv->use_enable_gpio = 0;
+	}
 
 	ret = of_property_read_u32(pdev->dev.of_node,
 				   "hw_margin_ms", &hw_margin);
